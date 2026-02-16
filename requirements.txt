@@ -1,0 +1,8 @@
+streamlit
+pandas
+plotly
+yfinance
+twstock
+requests
+lxml
+html5lib
