@@ -108,7 +108,7 @@ def calculate_tech_levels(df):
     }
 
 # ==========================================
-# Tab 1: 關鍵點位 (CDP)
+# Tab 1: 關鍵點位 (已修復 Submit 按鈕問題)
 # ==========================================
 with tab1:
     st.subheader("🎯 關鍵點位偵測")
@@ -116,41 +116,41 @@ with tab1:
         c1, c2 = st.columns([1, 2])
         q_in = c1.text_input("代號 (按 Enter):", value="2330")
         lookback = c2.slider("斐波那契區間", 30, 120, 60)
-        st.form_submit_button("計算")
+        run_1 = st.form_submit_button("計算") # 加入 run_1 變數修復 Missing Submit Button 錯誤
 
-    df, ticker, code, name = get_stock_data_smart(q_in)
-    if not df.empty:
-        lv = calculate_tech_levels(df)
-        recent = df[-lookback:]
-        mx, mn = float(recent['High'].max()), float(recent['Low'].min())
-        diff = mx - mn
-        st.success(f"📊 {code} {name} (收盤: {format_price(lv['close'])})")
-        rc1, rc2, rc3 = st.columns(3)
-        with rc1:
-            st.markdown("### 1. CDP 點位")
-            st.metric("二壓 (AH)", format_price(lv['ah']))
-            st.metric("一壓 (NH)", format_price(lv['nh']))
-            st.metric("一撐 (NL)", format_price(lv['nl']))
-            st.metric("二撐 (AL)", format_price(lv['al']))
-        with rc2:
-            st.markdown("### 2. 布林通道")
-            st.metric("上軌", format_price(lv['bb_up']))
-            st.metric("中軌", format_price(lv['ma20']))
-            st.metric("下軌", format_price(lv['bb_low']))
-        with rc3:
-            st.markdown("### 3. 斐波那契")
-            st.metric("回檔 0.382", format_price(mx - diff*0.382))
-            st.metric("回檔 0.618", format_price(mx - diff*0.618))
+    if run_1 or q_in:
+        df, ticker, code, name = get_stock_data_smart(q_in)
+        if not df.empty:
+            lv = calculate_tech_levels(df)
+            recent = df[-lookback:]
+            mx, mn = float(recent['High'].max()), float(recent['Low'].min())
+            diff = mx - mn
+            st.success(f"📊 {code} {name} (收盤: {format_price(lv['close'])})")
+            rc1, rc2, rc3 = st.columns(3)
+            with rc1:
+                st.markdown("### 1. CDP 點位")
+                st.metric("二壓 (AH)", format_price(lv['ah']))
+                st.metric("一壓 (NH)", format_price(lv['nh']))
+                st.metric("一撐 (NL)", format_price(lv['nl']))
+                st.metric("二撐 (AL)", format_price(lv['al']))
+            with rc2:
+                st.markdown("### 2. 布林通道")
+                st.metric("上軌", format_price(lv['bb_up']))
+                st.metric("中軌", format_price(lv['ma20']))
+                st.metric("下軌", format_price(lv['bb_low']))
+            with rc3:
+                st.markdown("### 3. 斐波那契")
+                st.metric("回檔 0.382", format_price(mx - diff*0.382))
+                st.metric("回檔 0.618", format_price(mx - diff*0.618))
 
 # ==========================================
-# Tab 2: ⚖️ 停損停利試算 (取代 K線)
+# Tab 2: ⚖️ 停損停利試算 
 # ==========================================
 with tab2:
     st.subheader("⚖️ 停損停利試算 (% 數換算價格)")
     sc1, sc2, sc3 = st.columns(3)
     with sc1:
         trade_dir = st.radio("方向", ["做多", "做空"], horizontal=True)
-        # 動態決定輸入步進值
         cur_p = st.session_state.get('calc_entry', 100.0)
         entry_p = st.number_input("預計進場價", value=cur_p, step=get_tick_step(cur_p), key='calc_entry')
     with sc2:
@@ -195,49 +195,3 @@ with tab3:
 
     lv = st.session_state.get('levels', {})
     opts = ["(請選擇...)"] + [f"{k} ({format_price(v)})" for k, v in lv.items() if k != 'close']
-    
-    def set_p(src, dst):
-        label = st.session_state[src]
-        for k, v in lv.items():
-            if k in label: st.session_state[dst] = get_snapped_price(v)
-
-    pc1, pc2, pc3 = st.columns(3)
-    with pc1:
-        st.selectbox("進場參考", opts, key='s_ep', on_change=set_p, args=('s_ep', 'ep'))
-        ep = st.number_input("進場價", key='ep', step=get_tick_step(st.session_state.get('curr', 100)))
-    with pc2:
-        st.selectbox("停損參考", opts, key='s_sl', on_change=set_p, args=('s_sl', 'sl'))
-        sl = st.number_input("停損價", key='sl', step=get_tick_step(st.session_state.get('curr', 100)))
-    with pc3:
-        st.selectbox("停利參考", opts, key='s_tp', on_change=set_p, args=('s_tp', 'tp'))
-        tp = st.number_input("停利價", key='tp', step=get_tick_step(st.session_state.get('curr', 100)))
-
-    side = st.radio("方向", ["做多", "做空"], horizontal=True, key='t3_side')
-    if st.button("計算損益"):
-        risk = (ep-sl if side=="做多" else sl-ep)*1000
-        gain = (tp-ep if side=="做多" else ep-tp)*1000
-        if risk <= 0: st.error("停損設置錯誤")
-        else:
-            m1, m2 = st.columns(2)
-            m1.metric("虧損風險", f"-${risk:,.0f}")
-            m1.metric("預期獲利", f"+${gain:,.0f}")
-            m2.metric("風報比", f"1 : {gain/risk:.2f}")
-
-# ==========================================
-# Tab 4: 🔍 盤後情報 (戰情連結)
-# ==========================================
-with tab4:
-    st.header("🔍 盤後籌碼戰情室")
-    t4_in = st.text_input("輸入代號:", value="2330", key="t4_input")
-    _, ticker, code, name = get_stock_data_smart(t4_in)
-    st.subheader(f"{code} {name} - 戰情連結")
-    
-    y_sym = f"{code}.TWO" if ".TWO" in ticker else code
-    link_y = f"https://tw.stock.yahoo.com/quote/{y_sym}/institutional-trading"
-    link_g = f"https://goodinfo.tw/tw/ShowBuySaleChart.asp?STOCK_ID={code}"
-    link_a = f"https://www.cnyes.com/twstock/{code}/chip/institution"
-
-    c1, c2, c3 = st.columns(3)
-    c1.link_button("🟣 Yahoo 三大法人", link_y, use_container_width=True)
-    c2.link_button("🔵 Goodinfo 法人買賣", link_g, use_container_width=True)
-    c3.link_button("🟠 鉅亨網 籌碼分析", link_a, use_container_width=True)
