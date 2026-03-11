@@ -6,7 +6,8 @@ import yfinance as yf
 import ssl
 import urllib3
 import os
-import streamlit.components.v1 as components  # 新增：用來注入前端程式碼
+import streamlit.components.v1 as components
+from datetime import datetime, timedelta  # 新增：用來判斷盤中或盤後
 
 # --- 1. SSL 與 安全設定 ---
 try:
@@ -24,7 +25,7 @@ st.set_page_config(page_title="股票戰情室", layout="wide")
 st.title("🔥 股票戰情室 (Stock War Room)")
 
 # ==========================================
-# 🌟 UX 優化：點擊輸入框自動全選 (手機版必備)
+# 🌟 UX 優化：點擊輸入框自動全選
 # ==========================================
 components.html(
     """
@@ -34,16 +35,13 @@ components.html(
         const inputs = doc.querySelectorAll('input[type="number"], input[type="text"]');
         inputs.forEach(input => {
             if (!input.dataset.autoSelectBound) {
-                // 當獲得焦點或被點擊時，自動全選內容
                 input.addEventListener('focus', function() { this.select(); });
                 input.addEventListener('click', function() { this.select(); });
                 input.dataset.autoSelectBound = 'true';
             }
         });
     }
-    // 初始執行
     addSelectOnFocus();
-    // 監聽網頁更新 (解決 Streamlit 重新渲染後失效的問題)
     const observer = new MutationObserver(addSelectOnFocus);
     observer.observe(doc.body, { childList: true, subtree: true });
     </script>
@@ -59,11 +57,10 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 # ==========================================
-# 核心輔助函式 (台股 Tick 自動校正)
+# 核心輔助函式
 # ==========================================
 
 def get_snapped_price(price):
-    """將價格強制校正到台股合法的跳動檔位 (Tick)"""
     if pd.isna(price) or price <= 0: return 0.0
     p = float(price)
     
@@ -77,7 +74,6 @@ def get_snapped_price(price):
     return round(p / tick) * tick
 
 def format_price(price):
-    """將價格格式化為漂亮的字串"""
     if pd.isna(price): return "-"
     p = get_snapped_price(float(price))
     if p < 50: fmt = "{:.2f}"
@@ -86,7 +82,6 @@ def format_price(price):
     return fmt.format(p)
 
 def get_tick_step(price):
-    """取得 UI 數字輸入框的 step 大小"""
     if price < 10: return 0.01
     if price < 50: return 0.05
     if price < 100: return 0.1
@@ -121,18 +116,41 @@ def get_stock_data_smart(query, period="6mo"):
     return df, ticker, code, name
 
 def calculate_tech_levels(df):
-    if df.empty: return {}
-    last = df.iloc[-1]
-    c, h, l = float(last['Close']), float(last['High']), float(last['Low'])
-    cdp = (h + l + 2*c) / 4
+    if df.empty or len(df) < 2: return {}
+    
+    # 🌟 核心修正：自動判斷盤中或盤後
+    now_tw = datetime.utcnow() + timedelta(hours=8)
+    last_date = df.index[-1].date()
+    
+    # 如果最後一筆資料是今天，且時間在 14:00 前（確保收盤資料已穩定），判定為「盤中」
+    is_live_candle = (last_date == now_tw.date() and now_tw.hour < 14)
+    
+    # 盤中用前一天算 CDP；盤後用今天算明天 CDP
+    if is_live_candle:
+        cdp_candle = df.iloc[-2]
+    else:
+        cdp_candle = df.iloc[-1]
+        
+    c_cdp, h_cdp, l_cdp = float(cdp_candle['Close']), float(cdp_candle['High']), float(cdp_candle['Low'])
+    
+    cdp = (h_cdp + l_cdp + 2 * c_cdp) / 4
+    ah = cdp + (h_cdp - l_cdp)
+    nh = cdp * 2 - l_cdp
+    nl = cdp * 2 - h_cdp
+    al = cdp - (h_cdp - l_cdp)
+
+    # MA 與布林通道：維持使用最即時的資料 (包含當下這根K線)
+    last_live = df.iloc[-1]
+    c_live = float(last_live['Close'])
+    
     ma20 = df['Close'].rolling(20).mean().iloc[-1]
     std = df['Close'].rolling(20).std().iloc[-1]
-    ma20 = c if pd.isna(ma20) else ma20
+    ma20 = c_live if pd.isna(ma20) else ma20
     std = 0 if pd.isna(std) else std
+    
     return {
-        'close': c, 'high': h, 'low': l,
-        'cdp': cdp, 'ah': cdp + (h - l), 'nh': cdp * 2 - l,
-        'nl': cdp * 2 - h, 'al': cdp - (h - l),
+        'close': c_live, 
+        'cdp': cdp, 'ah': ah, 'nh': nh, 'nl': nl, 'al': al,
         'ma20': ma20, 'bb_up': ma20 + std * 2, 'bb_low': ma20 - std * 2,
     }
 
