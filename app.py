@@ -61,7 +61,6 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # ==========================================
 
 def get_snapped_price(price):
-    """將價格強制校正到台股合法的跳動檔位 (Tick)"""
     if pd.isna(price) or price <= 0: return 0.0
     p = float(price)
     
@@ -117,36 +116,44 @@ def get_stock_data_smart(query, period="6mo"):
     return df, ticker, code, name
 
 def calculate_tech_levels(df):
-    """計算技術指標，並加入盤中/盤後判定機制"""
     if df.empty or len(df) < 2: return {}
     
-    # --- 1. 時間判定 (鎖定台灣時間 GMT+8) ---
+    # 🌟 絕對防呆機制：用「台灣時間字串」暴力比對
     tw_tz = timezone(timedelta(hours=8))
     now_tw = datetime.now(tw_tz)
-    last_date = df.index[-1].date()
+    today_str = now_tw.strftime('%Y-%m-%d')
     
-    # 判斷最後一筆 K 線是否為「今日」且時間在「14:00 前」
-    is_live_candle = (last_date == now_tw.date() and now_tw.hour < 14)
+    # 把 K 線的日期抽出來變成純字串 (YYYY-MM-DD)
+    df['date_str'] = df.index.astype(str).str[:10]
     
-    # --- 2. CDP 抓取邏輯 ---
-    if is_live_candle:
-        # 盤中：用「前一天」已收盤的資料算 CDP
-        cdp_candle = df.iloc[-2]
+    # --- 1. CDP 取值邏輯 ---
+    if now_tw.hour < 14:
+        # 盤中 (14:00前)：強迫排除今天，只抓「小於今天」的歷史資料
+        df_cdp = df[df['date_str'] < today_str]
     else:
-        # 盤後：用「今天」的收盤資料算明天的 CDP
+        # 盤後 (14:00後)：可以拿「小於等於今天」的資料
+        df_cdp = df[df['date_str'] <= today_str]
+        
+    if not df_cdp.empty:
+        cdp_candle = df_cdp.iloc[-1]
+        cdp_date = df_cdp['date_str'].iloc[-1]
+    else:
+        # 極端防呆 (例如剛上市沒資料)
         cdp_candle = df.iloc[-1]
+        cdp_date = df['date_str'].iloc[-1]
         
     c_cdp = float(cdp_candle['Close'])
     h_cdp = float(cdp_candle['High'])
     l_cdp = float(cdp_candle['Low'])
     
+    # 計算 CDP
     cdp = (h_cdp + l_cdp + 2 * c_cdp) / 4
     ah = cdp + (h_cdp - l_cdp)
     nh = cdp * 2 - l_cdp
     nl = cdp * 2 - h_cdp
     al = cdp - (h_cdp - l_cdp)
 
-    # --- 3. 現價與布林通道 (永遠用最新即時資料) ---
+    # --- 2. 現價與布林通道 (永遠用最新即時資料) ---
     last_live = df.iloc[-1]
     c_live = float(last_live['Close'])
     
@@ -157,6 +164,7 @@ def calculate_tech_levels(df):
     
     return {
         'close': c_live, 
+        'cdp_date': cdp_date, # 回傳基準日用來顯示
         'cdp': cdp, 'ah': ah, 'nh': nh, 'nl': nl, 'al': al,
         'ma20': ma20, 'bb_up': ma20 + std * 2, 'bb_low': ma20 - std * 2,
     }
@@ -179,21 +187,24 @@ with tab1:
             recent = df[-lookback:]
             mx, mn = float(recent['High'].max()), float(recent['Low'].min())
             diff = mx - mn
-            st.success(f"📊 {code} {name} (收盤/現價: {format_price(lv['close'])})")
+            
+            st.success(f"📊 {code} {name} (即時現價/收盤: {format_price(lv['close'])})")
+            
             rc1, rc2, rc3 = st.columns(3)
             with rc1:
-                st.markdown("### 1. CDP 逆勢操作")
+                # 顯示 CDP 抓取的基準日，讓你檢查有沒有抓錯天！
+                st.markdown(f"### 1. CDP 逆勢操作\n*(基準日: {lv.get('cdp_date', '')})*")
                 st.metric("第二壓力 (AH)", format_price(lv['ah']))
                 st.metric("第一壓力 (NH)", format_price(lv['nh']))
                 st.metric("第一支撐 (NL)", format_price(lv['nl']))
                 st.metric("第二支撐 (AL)", format_price(lv['al']))
             with rc2:
-                st.markdown("### 2. 布林通道")
+                st.markdown("### 2. 布林通道\n*(即時連動)*")
                 st.metric("上軌", format_price(lv['bb_up']))
                 st.metric("中軌", format_price(lv['ma20']))
                 st.metric("下軌", format_price(lv['bb_low']))
             with rc3:
-                st.markdown("### 3. 斐波那契")
+                st.markdown("### 3. 斐波那契\n*(區間最高/最低)*")
                 st.write(f"區間高: {format_price(mx)} / 低: {format_price(mn)}")
                 st.metric("回檔 0.382", format_price(mx - diff*0.382))
                 st.metric("回檔 0.618", format_price(mx - diff*0.618))
