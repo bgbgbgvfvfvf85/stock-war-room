@@ -7,7 +7,7 @@ import ssl
 import urllib3
 import os
 import streamlit.components.v1 as components
-from datetime import datetime, timedelta  # 新增：用來判斷盤中或盤後
+from datetime import datetime, timedelta, timezone
 
 # --- 1. SSL 與 安全設定 ---
 try:
@@ -61,6 +61,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # ==========================================
 
 def get_snapped_price(price):
+    """將價格強制校正到台股合法的跳動檔位 (Tick)"""
     if pd.isna(price) or price <= 0: return 0.0
     p = float(price)
     
@@ -116,22 +117,28 @@ def get_stock_data_smart(query, period="6mo"):
     return df, ticker, code, name
 
 def calculate_tech_levels(df):
+    """計算技術指標，並加入盤中/盤後判定機制"""
     if df.empty or len(df) < 2: return {}
     
-    # 🌟 核心修正：自動判斷盤中或盤後
-    now_tw = datetime.utcnow() + timedelta(hours=8)
+    # --- 1. 時間判定 (鎖定台灣時間 GMT+8) ---
+    tw_tz = timezone(timedelta(hours=8))
+    now_tw = datetime.now(tw_tz)
     last_date = df.index[-1].date()
     
-    # 如果最後一筆資料是今天，且時間在 14:00 前（確保收盤資料已穩定），判定為「盤中」
+    # 判斷最後一筆 K 線是否為「今日」且時間在「14:00 前」
     is_live_candle = (last_date == now_tw.date() and now_tw.hour < 14)
     
-    # 盤中用前一天算 CDP；盤後用今天算明天 CDP
+    # --- 2. CDP 抓取邏輯 ---
     if is_live_candle:
+        # 盤中：用「前一天」已收盤的資料算 CDP
         cdp_candle = df.iloc[-2]
     else:
+        # 盤後：用「今天」的收盤資料算明天的 CDP
         cdp_candle = df.iloc[-1]
         
-    c_cdp, h_cdp, l_cdp = float(cdp_candle['Close']), float(cdp_candle['High']), float(cdp_candle['Low'])
+    c_cdp = float(cdp_candle['Close'])
+    h_cdp = float(cdp_candle['High'])
+    l_cdp = float(cdp_candle['Low'])
     
     cdp = (h_cdp + l_cdp + 2 * c_cdp) / 4
     ah = cdp + (h_cdp - l_cdp)
@@ -139,7 +146,7 @@ def calculate_tech_levels(df):
     nl = cdp * 2 - h_cdp
     al = cdp - (h_cdp - l_cdp)
 
-    # MA 與布林通道：維持使用最即時的資料 (包含當下這根K線)
+    # --- 3. 現價與布林通道 (永遠用最新即時資料) ---
     last_live = df.iloc[-1]
     c_live = float(last_live['Close'])
     
@@ -172,7 +179,7 @@ with tab1:
             recent = df[-lookback:]
             mx, mn = float(recent['High'].max()), float(recent['Low'].min())
             diff = mx - mn
-            st.success(f"📊 {code} {name} (收盤: {format_price(lv['close'])})")
+            st.success(f"📊 {code} {name} (收盤/現價: {format_price(lv['close'])})")
             rc1, rc2, rc3 = st.columns(3)
             with rc1:
                 st.markdown("### 1. CDP 逆勢操作")
