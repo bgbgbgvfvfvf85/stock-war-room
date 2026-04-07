@@ -8,6 +8,7 @@ import urllib3
 import os
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta, timezone
+import plotly.graph_objects as go
 
 # --- 1. SSL 與 安全設定 ---
 try:
@@ -118,27 +119,21 @@ def get_stock_data_smart(query, period="6mo"):
 def calculate_tech_levels(df):
     if df.empty or len(df) < 2: return {}
     
-    # 🌟 絕對防呆機制：用「台灣時間字串」暴力比對
     tw_tz = timezone(timedelta(hours=8))
     now_tw = datetime.now(tw_tz)
     today_str = now_tw.strftime('%Y-%m-%d')
     
-    # 把 K 線的日期抽出來變成純字串 (YYYY-MM-DD)
     df['date_str'] = df.index.astype(str).str[:10]
     
-    # --- 1. CDP 取值邏輯 ---
     if now_tw.hour < 14:
-        # 盤中 (14:00前)：強迫排除今天，只抓「小於今天」的歷史資料
         df_cdp = df[df['date_str'] < today_str]
     else:
-        # 盤後 (14:00後)：可以拿「小於等於今天」的資料
         df_cdp = df[df['date_str'] <= today_str]
         
     if not df_cdp.empty:
         cdp_candle = df_cdp.iloc[-1]
         cdp_date = df_cdp['date_str'].iloc[-1]
     else:
-        # 極端防呆 (例如剛上市沒資料)
         cdp_candle = df.iloc[-1]
         cdp_date = df['date_str'].iloc[-1]
         
@@ -146,14 +141,12 @@ def calculate_tech_levels(df):
     h_cdp = float(cdp_candle['High'])
     l_cdp = float(cdp_candle['Low'])
     
-    # 計算 CDP
     cdp = (h_cdp + l_cdp + 2 * c_cdp) / 4
     ah = cdp + (h_cdp - l_cdp)
     nh = cdp * 2 - l_cdp
     nl = cdp * 2 - h_cdp
     al = cdp - (h_cdp - l_cdp)
 
-    # --- 2. 現價與布林通道 (永遠用最新即時資料) ---
     last_live = df.iloc[-1]
     c_live = float(last_live['Close'])
     
@@ -164,7 +157,7 @@ def calculate_tech_levels(df):
     
     return {
         'close': c_live, 
-        'cdp_date': cdp_date, # 回傳基準日用來顯示
+        'cdp_date': cdp_date,
         'cdp': cdp, 'ah': ah, 'nh': nh, 'nl': nl, 'al': al,
         'ma20': ma20, 'bb_up': ma20 + std * 2, 'bb_low': ma20 - std * 2,
     }
@@ -192,7 +185,6 @@ with tab1:
             
             rc1, rc2, rc3 = st.columns(3)
             with rc1:
-                # 顯示 CDP 抓取的基準日，讓你檢查有沒有抓錯天！
                 st.markdown(f"### 1. CDP 逆勢操作\n*(基準日: {lv.get('cdp_date', '')})*")
                 st.metric("第二壓力 (AH)", format_price(lv['ah']))
                 st.metric("第一壓力 (NH)", format_price(lv['nh']))
@@ -327,15 +319,84 @@ with tab3:
                 else: rc2.warning("⚠️ 風險過高")
 
 # ==========================================
-# Tab 4: 盤後情報 (戰情連結)
+# Tab 4: 盤後情報 (戰情連結 + 恐懼貪婪指數)
 # ==========================================
 with tab4:
-    st.header("🔍 盤後籌碼戰情室")
+    st.header("🔍 大盤天氣與盤後情報")
     
+    # --- 🌟 恐懼與貪婪指數儀表板 ---
+    st.subheader("🌐 巨觀環境：市場恐懼與貪婪指數 (Fear & Greed)")
+    try:
+        # 直接抓取 CNN 官方 API 資料
+        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+            "Referer": "https://edition.cnn.com/"
+        }
+        res = requests.get(url, headers=headers, timeout=5)
+        
+        if res.status_code == 200:
+            data = res.json()
+            score = data["fear_and_greed"]["score"]
+            prev_score = data["fear_and_greed"]["previous_close"]
+            diff = score - prev_score
+            
+            # 判斷分數落點並給予對應的警示與顏色
+            if score <= 24:
+                status_text = "🔵 **極度恐懼 (Extreme Fear)**：市場過度悲觀，通常是超跌或潛在買點"
+            elif score <= 44:
+                status_text = "🟢 **恐懼 (Fear)**：市場情緒保守，資金退潮觀望"
+            elif score <= 55:
+                status_text = "🟡 **中立 (Neutral)**：多空力道平衡，無明顯偏好"
+            elif score <= 75:
+                status_text = "🟠 **貪婪 (Greed)**：市場情緒樂觀，動能強勁，適合順勢做多"
+            else:
+                status_text = "🔴 **極度貪婪 (Extreme Greed)**：市場嚴重過熱，請留意反轉與獲利了結賣壓"
+            
+            vc1, vc2 = st.columns([1, 2])
+            with vc1:
+                # 顯示分數 (越高越貪婪，越低越恐懼)
+                st.metric("CNN 恐懼與貪婪指數", f"{score:.0f} / 100", f"{diff:.0f}")
+                st.info(status_text)
+            
+            with vc2:
+                # 繪製指數歷史走勢圖 (0~100)
+                hist_data = data.get("fear_and_greed_historical", {}).get("data", [])
+                if hist_data:
+                    df_hist = pd.DataFrame(hist_data)
+                    df_hist['x'] = pd.to_datetime(df_hist['x'], unit='ms')
+                    
+                    fig_fg = go.Figure()
+                    fig_fg.add_trace(go.Scatter(
+                        x=df_hist['x'], y=df_hist['y'], 
+                        mode='lines', line=dict(color='#00BFFF', width=2),
+                        fill='tozeroy', fillcolor='rgba(0, 191, 255, 0.1)'
+                    ))
+                    # 畫上區間警戒線 (25 與 75)
+                    fig_fg.add_hline(y=25, line_dash="dot", line_color="blue")
+                    fig_fg.add_hline(y=75, line_dash="dot", line_color="red")
+                    
+                    fig_fg.update_layout(
+                        height=180, margin=dict(l=0, r=0, t=10, b=10),
+                        yaxis=dict(range=[0, 100], tickvals=[0, 25, 50, 75, 100]),
+                        xaxis=dict(visible=False),
+                        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
+                    )
+                    st.plotly_chart(fig_fg, use_container_width=True, config={'displayModeBar': False})
+        else:
+            st.warning("⚠️ 暫時無法連線至 CNN 恐懼貪婪指數資料庫。")
+            
+    except Exception as e:
+        st.warning("⚠️ 讀取恐懼貪婪指數時發生錯誤，請稍後再試。")
+
+    st.markdown("---")
+    
+    # --- 原本的個股籌碼戰情連結 ---
+    st.subheader("🔍 個股籌碼戰情")
     with st.form(key='t4_form'):
         col1, col2 = st.columns([1, 4])
         with col1:
-            t4_in = st.text_input("輸入代號 (按 Enter):", value="2330")
+            t4_in = st.text_input("輸入個股代號 (按 Enter):", value="2330")
         with col2:
             st.write("")
             st.write("")
@@ -343,20 +404,14 @@ with tab4:
     
     _, ticker, code, name = get_stock_data_smart(t4_in)
     
-    st.subheader(f"{code} {name} - 外部戰情連結")
+    st.markdown(f"**{code} {name}** - 外部戰情連結")
     st.write("") 
 
-    # 1. Yahoo: 上櫃需加 .TWO
     yahoo_sym = f"{code}.TWO" if ".TWO" in ticker else code
     link_yahoo = f"https://tw.stock.yahoo.com/quote/{yahoo_sym}/institutional-trading"
-    
-    # 2. Goodinfo: 法人買賣超統計
     link_goodinfo = f"https://goodinfo.tw/tw/ShowBuySaleChart.asp?STOCK_ID={code}"
-    
-    # 3. 鉅亨網: 統一格式
     link_anue = f"https://www.cnyes.com/twstock/{code}/chip/institution"
 
-    # 顯示按鈕
     c1, c2, c3 = st.columns(3)
     with c1:
         st.markdown("### 🟣 Yahoo 奇摩")
