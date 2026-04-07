@@ -104,11 +104,24 @@ def get_stock_data_smart(query, period="6mo"):
     ticker, code, name = search_stock_info(query)
     try:
         df = yf.download(ticker, period=period, progress=False)
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        # 處理 yfinance 新版的 MultiIndex 問題
+        if isinstance(df.columns, pd.MultiIndex): 
+            df.columns = df.columns.get_level_values(0)
+            
+        # 🌟 核心修復：強制剔除含有 NaN (幽靈資料) 的 K 線
+        if not df.empty:
+            df = df.dropna(subset=['Close', 'High', 'Low'])
+            
         if df.empty and ticker.endswith('.TW'):
             ticker_two = f"{code}.TWO"
             df_two = yf.download(ticker_two, period=period, progress=False)
-            if isinstance(df_two.columns, pd.MultiIndex): df_two.columns = df_two.columns.get_level_values(0)
+            if isinstance(df_two.columns, pd.MultiIndex): 
+                df_two.columns = df_two.columns.get_level_values(0)
+                
+            # 🌟 核心修復：上櫃股票一樣要剔除空值
+            if not df_two.empty:
+                df_two = df_two.dropna(subset=['Close', 'High', 'Low'])
+                
             if not df_two.empty: 
                 new_name = twstock.codes[code].name if code in twstock.codes else name
                 return df_two, ticker_two, code, new_name
